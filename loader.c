@@ -17,6 +17,8 @@
 #include <errno.h>
 #include <stdint.h>
 
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
 #define PAGE 4096
 
 Elf32_Ehdr *ehdr = NULL;
@@ -27,33 +29,33 @@ int total_number_of_page_faults = 0;
 int total_number_of_pages_allocated = 0;
 int memory_wasted = 0;
 
+//////////////////////////////////////////////////////////////////////////////////////////////////
 
-typedef struct {
-    uintptr_t start_addr;
-    uintptr_t end_addr;
-    void *mem_ptr;
-    off_t file_offset;
-} segment_data;
 
+//////////////////////////////////////////////////////////////////////////////////////////////////
 void segmentation_fault_handler(int signum, siginfo_t* information, void* content){
 	
 	if (signum == SIGSEGV){
+	
 		total_number_of_page_faults++;
 		total_number_of_pages_allocated++;
 		
 		void* fault_addr = information->si_addr;
 		//address that caused the fault
 		
+		
+		
 		for (int i = 0; i < ehdr->e_phnum; i++){
 			void* start_address = (void*)(uintptr_t)phdr[i].p_vaddr;
+			void* end_address = (void*)((uintptr_t)start_address + (uintptr_t)phdr[i].p_memsz);
 			
-			if ((fault_addr < start_address) || (fault_addr >= (void*)(uintptr_t)(phdr[i].p_vaddr + phdr[i].p_memsz))){
+			if ((fault_addr < start_address) || (fault_addr >= end_address)){
 				continue;
 			}
 			
 			printf("start_addr: %p\n", start_address);
 			printf("fault_addr: %p\n", fault_addr);
-        	printf("end_addr: %p\n", (void*)(uintptr_t)(phdr[i].p_vaddr + phdr[i].p_memsz));
+        		printf("end_addr: %p\n", end_address);
         	
         	int pages_for_segment = 0;
         	for(int i = 0; i < phdr[i].p_memsz; i += PAGE){
@@ -97,17 +99,15 @@ void segmentation_fault_handler(int signum, siginfo_t* information, void* conten
         	return;
         	
 		}
+		}
 		
 	}
 	
-}
 
-/*
- * release memory and other cleanups
- */
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
 void loader_cleanup()
 {
-  // freeing the memory for globally defined variables
   if (ehdr){
   	ehdr = NULL;
   	free(ehdr);
@@ -122,6 +122,7 @@ void loader_cleanup()
   	close(fd);
   }
 }
+//////////////////////////////////////////////////////////////////////////////////////////////////
 
 /*
  * Load and run the ELF executable file
@@ -130,52 +131,9 @@ void load_and_run_elf(char** argv)
 {
 
   // 1. Load entire binary content into the memory from the ELF file.
-  fd = open(*argv , O_RDONLY);
-  
-  
-  
-  char* h_memory;
-  //h_memory = (char *)malloc(lseek(fd, 0, SEEK_END)); 
+  fd = open(argv[1] , O_RDONLY);
 
-  
-  off_t size_to_reserve = lseek(fd, 0, SEEK_END);
-  lseek(fd, 0, SEEK_SET); //offset becomes 0 for future of execution
-
-  //printf("size_to_reserve has value : %ld\n", size_to_reserve);
-
-  h_memory = (char *)malloc(size_to_reserve); //char* maybe? ======
-  
-
-  if (h_memory == 0){
-    printf("Error: memory reservation, check line - 34\n"); //check line 34, couldn't reserve memory
-    exit(1);
-  }
-  
-  ssize_t load_file = read(fd, h_memory, size_to_reserve);
-  
-  if ((size_t)load_file != size_to_reserve){
-  	perror("Error: problem in File read operation, check line 42\n"); //reading memory problem, check line 42
-  	free(h_memory);
-  	exit(1);
-  }
-
-  if (load_file < 0)
-  {
-    perror("Error: File read operation failed, check line 42\n"); //couldn't read memory properly, check line 42
-    free(h_memory);
-    exit(1);
-  }
-  
-  ehdr = (Elf32_Ehdr *)h_memory;
-  
-  /*
-  if (ehdr->e_type != ET_EXEC)
-  {
-    printf("Unsupported elf file, check elf file again maybe?\n"); //problem with ELF file... idk what to do here @Akshat pls check
-    free(h_memory);
-    exit(1);
-  }
-  */
+  ehdr = (Elf32_Ehdr *)malloc(sizeof(Elf32_Ehdr));
   
   read(fd, ehdr, sizeof(Elf32_Ehdr));
   
@@ -187,20 +145,27 @@ void load_and_run_elf(char** argv)
   struct sigaction signal;
   signal.sa_sigaction = segmentation_fault_handler;
   signal.sa_flags = SA_SIGINFO;
+  if (sigaction(SIGSEGV, &signal, NULL) == -1) {
+        perror("Error with SEGFAULT handler, error with sigaction \n");
+        exit(EXIT_FAILURE);
+    }
+  
   
   int (*_start)(void) = (int (*)(void)) ehdr->e_entry;
   int result = _start();
-  printf("User _start return value = %d\n",result);
+
+  printf("User _start return value = %d\n \n \n",result);
 
   
   printf("****************************RESULTS****************************\n \n");
   printf("Total number of page faults = %d \n" , total_number_of_page_faults);
   printf("Total number of pages allocated = %d \n" , total_number_of_pages_allocated);
-  printf("Total KBs of internal fragmentation = %d \n" , memory_wasted);
+  printf("Total KBs of internal fragmentation = %d \n \n" , memory_wasted);
   printf("***************************************************************\n \n");
   
   loader_cleanup();
 }
+//////////////////////////////////////////////////////////////////////////////////////////////////
 
 int main(int argc, char **argv)
 {
@@ -221,3 +186,4 @@ int main(int argc, char **argv)
   loader_cleanup();
   return 0;
 }
+//////////////////////////////////////////////////////////////////////////////////////////////////
