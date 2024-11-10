@@ -21,6 +21,7 @@
 
 #define PAGE 4096
 #define KB 1024
+#define HISTORY_SIZE 1000
 
 Elf32_Ehdr *ehdr = NULL;
 Elf32_Phdr *phdr = NULL;
@@ -29,6 +30,9 @@ int fd;
 int total_number_of_page_faults = 0;
 int total_number_of_pages_allocated = 0;
 int memory_wasted = 0;
+
+void* Pages_history[HISTORY_SIZE];
+int pointer;
 
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -54,9 +58,9 @@ void segmentation_fault_handler(int signum, siginfo_t* information, void* conten
 				continue;
 			}
 			
-			printf("start_addr: %p\n", start_address);
-			printf("fault_addr: %p\n", fault_addr);
-        		printf("end_addr: %p\n", end_address);
+			//printf("start_addr: %p\n", start_address);
+			//printf("fault_addr: %p\n", fault_addr);
+        		//printf("end_addr: %p\n", end_address);
         	
         	int pages_for_segment = 0;
         	for(int i = 0; i < phdr[i].p_memsz; i += PAGE){
@@ -100,13 +104,17 @@ void segmentation_fault_handler(int signum, siginfo_t* information, void* conten
     			exit(1);
         	}
         	
-        	//add_to_History(page);
+        	while (Pages_history[pointer] != NULL){
+        		pointer++;
+        	}
+        	
+        	Pages_history[pointer] = page;
         	return;
         	
 		}
-		}
-		
 	}
+		
+}
 	
 
 
@@ -126,6 +134,14 @@ void loader_cleanup()
   if (fd < 0){
   	close(fd);
   }
+  
+  for(int i = 0; i < HISTORY_SIZE; i++){
+  	if (Pages_history[i]){
+  		Pages_history[i] = NULL;
+  		free(Pages_history[i]);
+  	}
+  }
+  
 }
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -175,7 +191,7 @@ void load_and_run_elf(char** argv)
   int (*_start)(void) = (int (*)(void)) ehdr->e_entry;
   int result = _start();
 
-  printf("User _start return value = %d\n \n \n",result);
+  printf(" \n User _start return value = %d\n \n \n",result);
 
   
   printf("****************************RESULTS****************************\n \n");
@@ -202,6 +218,11 @@ int main(int argc, char **argv)
         exit(1);
     }
     close(file_descriptor);
+    
+    for (int i = 0; i < HISTORY_SIZE; i++){
+    	Pages_history[i] = NULL;
+    }
+    pointer = 0;
 
   load_and_run_elf(argv);
   loader_cleanup();
