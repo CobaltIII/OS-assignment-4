@@ -11,6 +11,16 @@
 #include <assert.h>
 #include <sys/types.h>
 #include <sys/mman.h>
+#include <signal.h>
+#include <stdatomic.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <elf.h>
+#include <setjmp.h>
+#include <errno.h>
+#include <stdint.h>
 
 void load_and_run_elf(char** exe);
 void loader_cleanup();
+void segmentation_fault_handler(int signum, siginfo_t* information, void* content);
+void setup();
