@@ -1,15 +1,126 @@
 #include "loader.h"
+#include <stdio.h>
+#include <elf.h>
+#include <string.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <assert.h>
+#include <sys/types.h>
+#include <sys/mman.h>
+#include <signal.h>
+#include <stdatomic.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <elf.h>
+#include <setjmp.h>
+#include <errno.h>
+#include <stdint.h>
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+#define PAGE 4096
+#define KB 1024
+#define HISTORY_SIZE 1000
 
 Elf32_Ehdr *ehdr = NULL;
 Elf32_Phdr *phdr = NULL;
 int fd;
 
-/*
- * release memory and other cleanups
- */
+int total_number_of_page_faults = 0;
+int total_number_of_pages_allocated = 0;
+int memory_wasted = 0;
+
+void* Pages_history[HISTORY_SIZE];
+int pointer;
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+void segmentation_fault_handler(int signum, siginfo_t* information, void* content){
+	
+	if (signum == SIGSEGV){
+	
+		total_number_of_page_faults++;
+		total_number_of_pages_allocated++;
+		
+		void* fault_addr = information->si_addr;
+		//address that caused the fault
+		
+		
+		
+		for (int i = 0; i < ehdr->e_phnum; i++){
+			void* start_address = (void*)(uintptr_t)phdr[i].p_vaddr;
+			void* end_address = (void*)((uintptr_t)start_address + (uintptr_t)phdr[i].p_memsz);
+			
+			if ((fault_addr < start_address) || (fault_addr >= end_address)){
+				continue;
+			}
+			
+			//printf("start_addr: %p\n", start_address);
+			//printf("fault_addr: %p\n", fault_addr);
+        		//printf("end_addr: %p\n", end_address);
+        	
+        	int pages_for_segment = 0;
+        	for(int i = 0; i < phdr[i].p_memsz; i += PAGE){
+        		pages_for_segment++; 
+        	}//calculates number of pages needed for the entire segment
+        	
+        	int page_index = ((uintptr_t)fault_addr - ((uintptr_t)phdr[i].p_vaddr)) / PAGE;
+        	//index value of the page with segfault-ing address
+        	
+        	off_t offset = (off_t)phdr[i].p_offset + page_index * PAGE;
+        	
+        	void* page = mmap(start_address + page_index * PAGE, PAGE, PROT_READ|PROT_WRITE|PROT_EXEC , MAP_ANONYMOUS|MAP_PRIVATE , fd, offset);
+        	
+        	if (page == MAP_FAILED){
+        		printf("Error: mmap fail, check line - 110\n"); //check line 110, couldn't do mmap
+            loader_cleanup();
+    			exit(1);
+        	}
+        	
+        	if (lseek(fd, offset , SEEK_SET) == -1){
+        		printf("Error: error at lseek, check line - 110\n"); //check line 119, couldn't do lseek
+            loader_cleanup();
+    			exit(1);
+        	}
+        	
+        	//reading all the remainder of the page
+        	int all_data = phdr[i].p_memsz - (page_index * PAGE);
+        	int data_on_page;
+        	if (all_data < PAGE){
+        		data_on_page = all_data; //FRAGMENTATION CASE
+        		memory_wasted = memory_wasted + (PAGE - all_data);
+        	}
+        	else{
+        		data_on_page = PAGE;
+        	}
+        	
+        	if(read(fd, page, data_on_page) == -1){
+        		printf("Error: error at while reading page data, check line - 110\n"); //check line 135
+            free(page);
+            loader_cleanup();
+    			exit(1);
+        	}
+        	
+        	while (Pages_history[pointer] != NULL){
+        		pointer++;
+        	}
+        	
+        	Pages_history[pointer] = page;
+        	return;
+        	
+		}
+	}
+		
+}
+	
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
 void loader_cleanup()
 {
-  // freeing the memory for globally defined variables
   if (ehdr){
   	ehdr = NULL;
   	free(ehdr);
@@ -23,110 +134,86 @@ void loader_cleanup()
   if (fd < 0){
   	close(fd);
   }
+  
+  for(int i = 0; i < HISTORY_SIZE; i++){
+  	if (Pages_history[i]){
+  		Pages_history[i] = NULL;
+  		free(Pages_history[i]);
+  	}
+  }
+  
 }
+//////////////////////////////////////////////////////////////////////////////////////////////////
 
 /*
  * Load and run the ELF executable file
  */
 void load_and_run_elf(char** argv)
 {
+
   // 1. Load entire binary content into the memory from the ELF file.
-  fd = open(*argv , O_RDONLY);
-  
-  char* h_memory;
-  h_memory = (char *)malloc(lseek(fd, 0, SEEK_END)); 
+  fd = open(argv[1] , O_RDONLY);
 
-  
-  off_t size_to_reserve = lseek(fd, 0, SEEK_END);
-  lseek(fd, 0, SEEK_SET); //offset becomes 0 for future of execution
-
-  //printf("size_to_reserve has value : %ld\n", size_to_reserve);
-
-
-  //char* h_memory;
-  //h_memory = (char *)malloc(size_to_reserve); //char* maybe? ======
-  
-
-  if (h_memory == 0){
-    printf("Error: memory reservation, check line - 34\n"); //check line 34, couldn't reserve memory
+  ehdr = (Elf32_Ehdr *)malloc(sizeof(Elf32_Ehdr));
+  if (ehdr == 0){
+    printf("Error: memory reservation\n"); //check line 34, couldn't reserve memory
     exit(1);
   }
   
-  ssize_t load_file = read(fd, h_memory, size_to_reserve);
+  ssize_t load_ehdr = read(fd, ehdr, sizeof(Elf32_Ehdr));
+  if((size_t)load_ehdr != sizeof(Elf32_Ehdr) || load_ehdr < 0){
+  	printf("Error: problem in File read operation\n"); //reading memory problem, check line 42
+  	loader_cleanup();
+  	exit(1);
+  }
   
-  if ((size_t)load_file != size_to_reserve){
-  	perror("Error: problem in File read operation, check line 42\n"); //reading memory problem, check line 42
-  	free(h_memory);
+  lseek(fd, ehdr->e_phoff, SEEK_SET);
+
+  phdr = (Elf32_Phdr *)malloc(ehdr->e_phnum * sizeof(Elf32_Phdr));
+  ssize_t load_phdr = read(fd, phdr, ehdr->e_phnum * sizeof(Elf32_Phdr));
+  if((size_t)load_phdr != ehdr->e_phnum * sizeof(Elf32_Phdr) || load_phdr < 0){
+  	printf("Error: problem in File read operation\n"); //reading memory problem, check line 42
+  	loader_cleanup();
   	exit(1);
   }
 
-  if (load_file < 0)
-  {
-    perror("Error: File read operation failed, check line 42\n"); //couldn't read memory properly, check line 42
-    free(h_memory);
-    exit(1);
-  }
   
-  ehdr = (Elf32_Ehdr *)h_memory;
-  
-  if (ehdr->e_type != ET_EXEC)
-  {
-    printf("Unsupported elf file, check elf file again maybe?\n"); //problem with ELF file... idk what to do here @Akshat pls check
-    free(h_memory);
-    exit(1);
-  }
-  
-  phdr = (Elf32_Phdr *)(h_memory + (*ehdr).e_phoff);
-  unsigned int e_entry = (*ehdr).e_entry;
-  void *entrypoint;
-  void *v_memory;
-  
-  //printf("break 2");
-  
-  
-  // 2. Iterate through the PHDR table and find the section of PT_LOAD 
-  //    type that contains the address of the entrypoint method in fib.c
-  
-  for (int i = 0; i < (*ehdr).e_phnum; i++)
-  {
-    //printf("value of i = %d\n", i); //indexing of the phdr table
-    if (phdr[i].p_type != PT_LOAD){
-      continue;
+  struct sigaction signal;
+  signal.sa_sigaction = segmentation_fault_handler;
+  signal.sa_flags = SA_SIGINFO;
+  if (sigaction(SIGSEGV, &signal, NULL) == -1) {
+        perror("Error with SEGFAULT handler, error with sigaction \n");
+        loader_cleanup();
+        exit(EXIT_FAILURE);
     }
-    
-    else{
-      // 3. Allocate memory of the size "p_memsz" using mmap function 
-      //    and then copy the segment content
-      v_memory = mmap(NULL, phdr[i].p_memsz, PROT_READ|PROT_WRITE|PROT_EXEC, MAP_ANONYMOUS|MAP_PRIVATE, 0, 0);
-      memcpy(v_memory, h_memory + phdr[i].p_offset, phdr[i].p_memsz); //i think this is to copy the memory segment?
-      if (v_memory == MAP_FAILED)
-      {
-        printf("Error: Memory mapping failed\n"); //the mmap function bhai yahan kya karna hai-
-        exit(1);
-      }
-      
-      // 4. Navigate to the entrypoint address into the segment loaded in the memory in above step
-      entrypoint = v_memory + (e_entry - phdr[i].p_vaddr);
-      if ((entrypoint >= v_memory) && (v_memory + phdr[i].p_offset >= entrypoint)){
-        break;
-      }
-    }
-    
-  }
   
-  //printf("%p,%p",v_memory,entrypoint);
   
-  if (entrypoint != NULL){
-    //5. Typecast the address to that of function pointer matching "_start" method in fib.c.
-    // 6. Call the "_start" method and print the value returned from the "_start"
-    int (*_start)(void) = (int (*)(void)) entrypoint;
-    int result = _start();
-    printf("User _start return value = %d\n",result);
-  }
+  int (*_start)(void) = (int (*)(void)) ehdr->e_entry;
+  int result = _start();
+
+  printf(" \n User _start return value = %d\n \n \n",result);
+
+  
+  printf("****************************RESULTS****************************\n \n");
+  printf("Total number of page faults = %d \n" , total_number_of_page_faults);
+  printf("Total number of pages allocated = %d \n" , total_number_of_pages_allocated);
+  printf("Total KBs of internal fragmentation = %f \n \n" , (float)memory_wasted/KB);
+  printf("***************************************************************\n \n");
   
   loader_cleanup();
-  close(fd);
 }
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+void setup(){
+for (int i = 0; i < HISTORY_SIZE; i++){
+    	Pages_history[i] = NULL;
+    }
+    pointer = 0;
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
+
 
 int main(int argc, char **argv)
 {
@@ -135,23 +222,19 @@ int main(int argc, char **argv)
     printf("Usage: %s <ELF Executable> \n", argv[0]);
     exit(1);
   }
-  // 1. carry out necessary checks on the input ELF file
-
-  // checking if ELF file exists in the provided path
   
   int file_descriptor = open(argv[1], O_RDONLY);
-    // Check if the file exists and can be opened
     if (file_descriptor < 0) {
         printf("Unable to open ELF file.\n");
         exit(1);
     }
     close(file_descriptor);
+    
+    setup();
 
-  // 2. passing it to the loader for carrying out the loading/execution
-  load_and_run_elf(&argv[1]);
-
-  // 3. invoke the cleanup routine inside the loader
+  load_and_run_elf(argv);
   loader_cleanup();
-
   return 0;
 }
+
+//////////////////////////////////////////////////////////////////////////////////////////////////
