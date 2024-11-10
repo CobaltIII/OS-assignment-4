@@ -20,6 +20,7 @@
 //////////////////////////////////////////////////////////////////////////////////////////////////
 
 #define PAGE 4096
+#define KB 1024
 
 Elf32_Ehdr *ehdr = NULL;
 Elf32_Phdr *phdr = NULL;
@@ -71,11 +72,13 @@ void segmentation_fault_handler(int signum, siginfo_t* information, void* conten
         	
         	if (page == MAP_FAILED){
         		printf("Error: mmap fail, check line - 110\n"); //check line 110, couldn't do mmap
+            loader_cleanup();
     			exit(1);
         	}
         	
         	if (lseek(fd, offset , SEEK_SET) == -1){
         		printf("Error: error at lseek, check line - 110\n"); //check line 119, couldn't do lseek
+            loader_cleanup();
     			exit(1);
         	}
         	
@@ -92,6 +95,8 @@ void segmentation_fault_handler(int signum, siginfo_t* information, void* conten
         	
         	if(read(fd, page, data_on_page) == -1){
         		printf("Error: error at while reading page data, check line - 110\n"); //check line 135
+            free(page);
+            loader_cleanup();
     			exit(1);
         	}
         	
@@ -134,12 +139,27 @@ void load_and_run_elf(char** argv)
   fd = open(argv[1] , O_RDONLY);
 
   ehdr = (Elf32_Ehdr *)malloc(sizeof(Elf32_Ehdr));
+  if (ehdr == 0){
+    printf("Error: memory reservation\n"); //check line 34, couldn't reserve memory
+    exit(1);
+  }
   
-  read(fd, ehdr, sizeof(Elf32_Ehdr));
+  ssize_t load_ehdr = read(fd, ehdr, sizeof(Elf32_Ehdr));
+  if((size_t)load_ehdr != sizeof(Elf32_Ehdr) || load_ehdr < 0){
+  	printf("Error: problem in File read operation\n"); //reading memory problem, check line 42
+  	loader_cleanup();
+  	exit(1);
+  }
   
   lseek(fd, ehdr->e_phoff, SEEK_SET);
+
   phdr = (Elf32_Phdr *)malloc(ehdr->e_phnum * sizeof(Elf32_Phdr));
-  read(fd, phdr, ehdr->e_phnum * sizeof(Elf32_Phdr));
+  ssize_t load_phdr = read(fd, phdr, ehdr->e_phnum * sizeof(Elf32_Phdr));
+  if((size_t)load_phdr != ehdr->e_phnum * sizeof(Elf32_Phdr) || load_phdr < 0){
+  	printf("Error: problem in File read operation\n"); //reading memory problem, check line 42
+  	loader_cleanup();
+  	exit(1);
+  }
 
   
   struct sigaction signal;
@@ -147,6 +167,7 @@ void load_and_run_elf(char** argv)
   signal.sa_flags = SA_SIGINFO;
   if (sigaction(SIGSEGV, &signal, NULL) == -1) {
         perror("Error with SEGFAULT handler, error with sigaction \n");
+        loader_cleanup();
         exit(EXIT_FAILURE);
     }
   
@@ -160,7 +181,7 @@ void load_and_run_elf(char** argv)
   printf("****************************RESULTS****************************\n \n");
   printf("Total number of page faults = %d \n" , total_number_of_page_faults);
   printf("Total number of pages allocated = %d \n" , total_number_of_pages_allocated);
-  printf("Total KBs of internal fragmentation = %d \n \n" , memory_wasted);
+  printf("Total KBs of internal fragmentation = %f \n \n" , (float)memory_wasted/KB);
   printf("***************************************************************\n \n");
   
   loader_cleanup();
